@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Petualangan Rara: Misi Bintang Pixel</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #111420;
+            color: #ffffff;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        #game-container {
+            position: relative;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
+            border: 4px solid #3d4a68;
+            border-radius: 8px;
+            overflow: hidden;
+            background: #000;
+        }
+
+        canvas {
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+
+        /* Virtual D-Pad for Mobile */
+        .touch-controls {
+            display: none;
+            position: absolute;
+            bottom: 10px;
+            left: 0;
+            right: 0;
+            padding: 0 20px;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: none;
+        }
+
+        @media (max-width: 800px) {
+            .touch-controls {
+                display: flex;
+            }
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            pointer-events: auto;
+        }
+
+        .t-btn {
+            width: 55px;
+            height: 55px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            color: #fff;
+            font-size: 20px;
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(4px);
+            touch-action: manipulation;
+        }
+
+        .t-btn:active {
+            background: rgba(255, 255, 255, 0.5);
+        }
+
+        .instructions {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #a0aab8;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas" width="800" height="450"></canvas>
+    
+    <!-- Controls Layout for Mobile Touch -->
+    <div class="touch-controls">
+        <div class="btn-group">
+            <div class="t-btn" id="btn-left">◀</div>
+            <div class="t-btn" id="btn-right">▶</div>
+        </div>
+        <div class="btn-group">
+            <div class="t-btn" id="btn-jump" style="width: 70px; height: 70px; background: rgba(241, 196, 15, 0.3);">▲</div>
+        </div>
+    </div>
+</div>
+
+<div class="instructions">
+    <b>KONTROL:</b> Tombol <b>A / D</b> atau <b>Panah</b> untuk Jalan | <b>W / Space</b> untuk Melompat
+</div>
+
+<script>
+// --- AUDIO SYNTHESIZER (8-BIT SFX) ---
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let ctx = null;
+
+function initAudio() {
+    if (!ctx) ctx = new AudioCtx();
+}
+
+function playSound(type) {
+    if (!ctx) return;
+    try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        const now = ctx.currentTime;
+        if (type === 'jump') {
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(150, now);
+            osc.frequency.exponentialRampToValueAtTime(400, now + 0.12);
+            gain.gain.setValueAtTime(0.15, now);
+            gain.gain.linearRampToValueAtTime(0.01, now + 0.12);
+            osc.start(now);
+            osc.stop(now + 0.12);
+        } else if (type === 'coin') {
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(987.77, now); // B5
+            osc.frequency.setValueAtTime(1318.51, now + 0.08); // E6
+            gain.gain.setValueAtTime(0.2, now);
+            gain.gain.linearRampToValueAtTime(0.01, now + 0.2);
+            osc.start(now);
+            osc.stop(now + 0.2);
+        } else if (type === 'hurt') {
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(200, now);
+            osc.frequency.linearRampToValueAtTime(60, now + 0.2);
+            gain.gain.setValueAtTime(0.2, now);
+            gain.gain.linearRampToValueAtTime(0.01, now + 0.2);
+            osc.start(now);
+            osc.stop(now + 0.2);
+        } else if (type === 'win') {
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(523.25, now);
+            osc.frequency.setValueAtTime(659.25, now + 0.1);
+            osc.frequency.setValueAtTime(783.99, now + 0.2);
+            osc.frequency.setValueAtTime(1046.50, now + 0.3);
+            gain.gain.setValueAtTime(0.2, now);
+            gain.gain.linearRampToValueAtTime(0.01, now + 0.5);
+            osc.start(now);
+            osc.stop(now + 0.5);
+        }
+    } catch (e) {}
+}
+
+// --- GAME ENGINE ---
+const canvas = document.getElementById('gameCanvas');
+const gctx = canvas.getContext('2d');
+
+const TILE_SIZE = 32;
+let gameState = 'START'; // START, PLAYING, WIN, GAMEOVER
+let currentLevel = 0;
+
+// Keys State
+const keys = { left: false, right: false, jump: false };
+
+// Event Listeners
+window.addEventListener('keydown', (e) => {
+    initAudio();
+    if (e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = true;
+    if (e.code === 'KeyD' || e.code === 'ArrowRight') keys.right = true;
+    if (e.code === 'KeyW' || e.code === 'Space' || e.code === 'ArrowUp') keys.jump = true;
+    
+    if (gameState !== 'PLAYING' && e.code === 'Enter') {
+        if (gameState === 'GAMEOVER') currentLevel = 0;
+        if (gameState === 'WIN') currentLevel = 0;
+        startLevel(currentLevel);
+    }
+});
+
+window.addEventListener('keyup', (e) => {
+    if (e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = false;
+    if (e.code === 'KeyD' || e.code === 'ArrowRight') keys.right = false;
+    if (e.code === 'KeyW' || e.code === 'Space' || e.code === 'ArrowUp') keys.jump = false;
+});
+
+// Mobile Controls Setup
+const bindTouch = (id, key) => {
+    const btn = document.getElementById(id);
+    btn.addEventListener('touchstart', (e) => { e.preventDefault(); initAudio(); keys[key] = true; });
+    btn.addEventListener('touchend', (e) => { e.preventDefault(); keys[key] = false; });
+    btn.addEventListener('mousedown', () => { initAudio(); keys[key] = true; });
+    btn.addEventListener('mouseup', () => { keys[key] = false; });
+};
+bindTouch('btn-left', 'left');
+bindTouch('btn-right', 'right');
+bindTouch('btn-jump', 'jump');
+
+// Level Maps (0: Kosong, 1: Tanah, 2: Duri, 3: Bintang, 4: Portal)
+const levels = [
+    {
+        name: "Stage 1: Hutan Hijau",
+        bg: "#1b263b",
+        groundColor: "#2d6a4f",
+        map: [
+            "                                        ",
+            "                                        ",
+            "                                        ",
+            "                                     4  ",
+            "                  3                █████",
+            "               ██████                   ",
+            "                                        ",
+            "         ████                           ",
+            "                                        ",
+            "    3                                   ",
+            "  █████        22                       ",
+            "████████████████████████████████████████"
+        ],
+        enemies: [{ x: 300, y: 320, vx: 1, minX: 250, maxX: 450 }]
+    },
+    {
+        name: "Stage 2: Goa Kristal",
+        bg: "#0d1b2a",
+        groundColor: "#415a77",
+        map: [
+            "                                        ",
+            "                                     4  ",
+            "                                   █████",
+            "             3                          ",
+            "          ██████                        ",
+            "                                        ",
+            "     ████                               ",
+            "                                        ",
+            "  3            22                       ",
+            "█████       ████████                    ",
+            "                                        ",
+            "████████████████████████████████████████"
+        ],
+        enemies: [
+            { x: 200, y: 260, vx: 1.5, minX: 160, maxX: 260 },
+            { x: 450, y: 320, vx: -1.5, minX: 400, maxX: 600 }
+        ]
+    }
+];
+
+// Entities
+let player = {
+    x: 50,
+    y: 100,
+    w: 24,
+    h: 30,
+    vx: 0,
+    vy: 0,
+    speed: 3.5,
+    jumpPower: -9.5,
+    grounded: false,
+    facing: 'right',
+    hp: 3,
+    stars: 0
+};
+
+let mapBlocks = [];
+let hazards = [];
+let stars = [];
+let portal = null;
+let enemies = [];
+
+function startLevel(idx) {
+    if (idx >= levels.length) {
+        gameState = 'WIN';
+        playSound('win');
+        return;
+    }
+    
+    currentLevel = idx;
+    const lvl = levels[currentLevel];
+    
+    mapBlocks = [];
+    hazards = [];
+    stars = [];
+    enemies = JSON.parse(JSON.stringify(lvl.enemies));
+    
+    player.x = 50;
+    player.y = 100;
+    player.vx = 0;
+    player.vy = 0;
+    player.stars = 0;
+    if (idx === 0) player.hp = 3;
+
+    for (let r = 0; r < lvl.map.length; r++) {
+        for (let c = 0; c < lvl.map[r].length; c++) {
+            const char = lvl.map[r][c];
+            const x = c * TILE_SIZE;
+            const y = r * TILE_SIZE;
+            
+            if (char === '█') mapBlocks.push({ x, y, w: TILE_SIZE, h: TILE_SIZE });
+            if (char === '2') hazards.push({ x, y: y + 16, w: TILE_SIZE, h: 16 });
+            if (char === '3') stars.push({ x: x + 8, y: y + 8, w: 16, h: 16, collected: false });
+            if (char === '4') portal = { x, y, w: TILE_SIZE, h: TILE_SIZE * 1.5 };
+        }
+    }
+
+    gameState = 'PLAYING';
+}
+
+// AABB Collision
+function rectIntersect(r1, r2) {
+    return !(r2.x >= r1.x + r1.w || r2.x + r2.w <= r1.x || r2.y >= r1.y + r1.h || r2.y + r2.h <= r1.y);
+}
+
+// Update Loop
+function update() {
+    if (gameState !== 'PLAYING') return;
+
+    // Movement Horizontal
+    if (keys.left) {
+        player.vx = -player.speed;
+        player.facing = 'left';
+    } else if (keys.right) {
+        player.vx = player.speed;
+        player.facing = 'right';
+    } else {
+        player.vx *= 0.8;
+    }
+
+    // Gravity & Jump
+    player.vy += 0.45; // Gravity
+    if (keys.jump && player.grounded) {
+        player.vy = player.jumpPower;
+        player.grounded = false;
+        playSound('jump');
+    }
+
+    // X Collision
+    player.x += player.vx;
+    for (let b of mapBlocks) {
+        if (rectIntersect(player, b)) {
+            if (player.vx > 0) player.x = b.x - player.w;
+            if (player.vx < 0) player.x = b.x + b.w;
+        }
+    }
+
+    // Y Collision
+    player.grounded = false;
+    player.y += player.vy;
+    for (let b of mapBlocks) {
+        if (rectIntersect(player, b)) {
+            if (player.vy > 0) {
+                player.y = b.y - player.h;
+                player.vy = 0;
+                player.grounded = true;
+            } else if (player.vy < 0) {
+                player.y = b.y + b.h;
+                player.vy = 0;
+            }
+        }
+    }
+
+    // Enemies Movement & Collision
+    for (let e of enemies) {
+        e.x += e.vx;
+        if (e.x < e.minX || e.x > e.maxX) e.vx *= -1;
+
+        let eBox = { x: e.x, y: e.y, w: 24, h: 20 };
+        if (rectIntersect(player, eBox)) {
+            if (player.vy > 0 && player.y + player.h - player.vy <= e.y + 8) {
+                // Stomp enemy
+                player.vy = -6;
+                e.x = -999; // Destroy
+                playSound('jump');
+            } else {
+                takeDamage();
+            }
+        }
+    }
+
+    // Hazards (Duri)
+    for (let h of hazards) {
+        if (rectIntersect(player, h)) takeDamage();
+    }
+
+    // Collect Stars
+    for (let s of stars) {
+        if (!s.collected && rectIntersect(player, s)) {
+            s.collected = true;
+            player.stars++;
+            playSound('coin');
+        }
+    }
+
+    // Check Portal
+    if (portal && rectIntersect(player, portal)) {
+        startLevel(currentLevel + 1);
+    }
+
+    // Bottom Fall Check
+    if (player.y > canvas.height + 50) takeDamage(true);
+}
+
+function takeDamage(instantKill = false) {
+    playSound('hurt');
+    if (instantKill) {
+        player.hp = 0;
+    } else {
+        player.hp--;
+        player.vy = -5;
+        player.vx = player.facing === 'right' ? -4 : 4;
+    }
+
+    if (player.hp <= 0) {
+        gameState = 'GAMEOVER';
+    }
+}
+
+// --- RENDER GAME ---
+function draw() {
+    // Clear Screen & Draw BG
+    gctx.fillStyle = levels[currentLevel] ? levels[currentLevel].bg : "#111420";
+    gctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if (gameState === 'START') {
+        gctx.fillStyle = "#fff";
+        gctx.textAlign = "center";
+        gctx.font = "24px 'Courier New'";
+        gctx.fillText("PETUALANGAN RARA", canvas.width / 2, 180);
+        gctx.font = "14px 'Courier New'";
+        gctx.fillText("Tekan ENTER atau KLIK Layar untuk Main", canvas.width / 2, 240);
+        return;
+    }
+
+    if (gameState === 'GAMEOVER') {
+        gctx.fillStyle = "#e74c3c";
+        gctx.textAlign = "center";
+        gctx.font = "28px 'Courier New'";
+        gctx.fillText("GAME OVER!", canvas.width / 2, 180);
+        gctx.fillStyle = "#fff";
+        gctx.font = "14px 'Courier New'";
+        gctx.fillText("Tekan ENTER untuk Coba Lagi", canvas.width / 2, 230);
+        return;
+    }
+
+    if (gameState === 'WIN') {
+        gctx.fillStyle = "#f1c40f";
+        gctx.textAlign = "center";
+        gctx.font = "26px 'Courier New'";
+        gctx.fillText("SELAMAT! RARA BERHASIL!", canvas.width / 2, 180);
+        gctx.fillStyle = "#fff";
+        gctx.font = "14px 'Courier New'";
+        gctx.fillText("Kamu telah menyelesaikan semua level!", canvas.width / 2, 220);
+        gctx.fillText("Tekan ENTER untuk Main Lagi", canvas.width / 2, 260);
+        return;
+    }
+
+    // Render Blocks
+    gctx.fillStyle = levels[currentLevel].groundColor;
+    for (let b of mapBlocks) {
+        gctx.fillRect(b.x, b.y, b.w, b.h);
+        gctx.strokeStyle = "rgba(255,255,255,0.1)";
+        gctx.strokeRect(b.x, b.y, b.w, b.h);
+    }
+
+    // Render Duri
+    gctx.fillStyle = "#e74c3c";
+    for (let h of hazards) {
+        gctx.beginPath();
+        gctx.moveTo(h.x, h.y + h.h);
+        gctx.lineTo(h.x + h.w / 2, h.y);
+        gctx.lineTo(h.x + h.w, h.y + h.h);
+        gctx.fill();
+    }
+
+    // Render Portal
+    if (portal) {
+        gctx.fillStyle = "#9b59b6";
+        gctx.fillRect(portal.x, portal.y, portal.w, portal.h);
+        gctx.fillStyle = "#8e44ad";
+        gctx.fillRect(portal.x + 4, portal.y + 4, portal.w - 8, portal.h - 8);
+    }
+
+    // Render Bintang
+    gctx.fillStyle = "#f1c40f";
+    for (let s of stars) {
+        if (!s.collected) {
+            gctx.beginPath();
+            gctx.arc(s.x + 8, s.y + 8, 7, 0, Math.PI * 2);
+            gctx.fill();
+        }
+    }
+
+    // Render Enemies (Slime Merah)
+    gctx.fillStyle = "#e67e22";
+    for (let e of enemies) {
+        if (e.x > 0) {
+            gctx.beginPath();
+            gctx.arc(e.x + 12, e.y + 12, 10, Math.PI, 0, false);
+            gctx.fill();
+        }
+    }
+
+    // Render Rara (Pixel Character)
+    gctx.fillStyle = "#ff758c"; // Baju Pink Rara
+    gctx.fillRect(player.x, player.y + 10, player.w, player.h - 10);
+    gctx.fillStyle = "#ffdbac"; // Kepala / Kulit
+    gctx.fillRect(player.x + 2, player.y, player.w - 4, 12);
+    gctx.fillStyle = "#2c3e50"; // Mata Pixel
+    const eyeX = player.facing === 'right' ? player.x + 14 : player.x + 4;
+    gctx.fillRect(eyeX, player.y + 4, 3, 3);
+
+    // UI HUD
+    gctx.fillStyle = "#ffffff";
+    gctx.font = "14px 'Courier New'";
+    gctx.textAlign = "left";
+    gctx.fillText(`DARAH: ${"❤".repeat(player.hp)}`, 15, 25);
+    gctx.fillText(`BINTANG: ${player.stars}`, 15, 45);
+    gctx.textAlign = "right";
+    gctx.fillText(levels[currentLevel].name, canvas.width - 15, 25);
+}
+
+// Game Loop
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+
+// Click to Start Overlay
+canvas.addEventListener('click', () => {
+    initAudio();
+    if (gameState === 'START') startLevel(0);
+});
+
+loop();
+</script>
+</body>
+</html>
